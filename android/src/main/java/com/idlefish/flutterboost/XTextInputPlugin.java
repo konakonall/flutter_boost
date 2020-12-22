@@ -13,6 +13,7 @@ import android.text.Editable;
 import android.text.InputType;
 import android.text.Selection;
 import android.view.View;
+import android.graphics.Rect;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -49,6 +50,7 @@ public class XTextInputPlugin {
     @NonNull
     private PlatformViewsController platformViewsController;
     private  boolean restartAlwaysRequired;
+    @Nullable private Rect lastClientRect;
 
     // When true following calls to createInputConnection will return the cached lastInputConnection if the input
     // target is a platform view. See the comments on lockPlatformViewInputConnection for more details.
@@ -108,6 +110,14 @@ public class XTextInputPlugin {
             }
 
             @Override
+            public void setEditableSizeAndTransform(double width,
+                                 double height,
+                                 double[] transform) {
+                saveEditableSizeAndTransform(width, height, transform);
+             }
+
+
+            @Override
             public void setEditingState(TextInputChannel.TextEditState editingState) {
                 setTextInputEditingState(mView, editingState);
             }
@@ -116,12 +126,58 @@ public class XTextInputPlugin {
             public void clearClient() {
                 clearTextInputClient();
             }
+
+            @Override
+            public void requestAutofill() {
+            }
         });
         restartAlwaysRequired = isRestartAlwaysRequired();
 
     }
 
+    private interface MinMax {
+        void inspect(double x, double y);
+    }
 
+    private void saveEditableSizeAndTransform(double width, double height, final double[] matrix) {
+        final double[] minMax = new double[4]; // minX, maxX, minY, maxY.
+        final boolean isAffine = matrix[3] == 0 && matrix[7] == 0 && matrix[15] == 1;
+        minMax[0] = minMax[1] = matrix[12] / matrix[15]; // minX and maxX.
+        minMax[2] = minMax[3] = matrix[13] / matrix[15]; // minY and maxY.
+    
+        final MinMax finder =
+            new MinMax() {
+              @Override
+              public void inspect(double x, double y) {
+                final double w = isAffine ? 1 : 1 / (matrix[3] * x + matrix[7] * y + matrix[15]);
+                final double tx = (matrix[0] * x + matrix[4] * y + matrix[12]) * w;
+                final double ty = (matrix[1] * x + matrix[5] * y + matrix[13]) * w;
+    
+                if (tx < minMax[0]) {
+                  minMax[0] = tx;
+                } else if (tx > minMax[1]) {
+                  minMax[1] = tx;
+                }
+    
+                if (ty < minMax[2]) {
+                  minMax[2] = ty;
+                } else if (ty > minMax[3]) {
+                  minMax[3] = ty;
+                }
+              }
+            };
+    
+        finder.inspect(width, 0);
+        finder.inspect(width, height);
+        finder.inspect(0, height);
+        final Float density = mView.getContext().getResources().getDisplayMetrics().density;
+        lastClientRect =
+            new Rect(
+                (int) (minMax[0] * density),
+                (int) (minMax[2] * density),
+                (int) Math.ceil(minMax[1] * density),
+                (int) Math.ceil(minMax[3] * density));
+    }
 
     @NonNull
     public InputMethodManager getInputMethodManager() {
